@@ -1,10 +1,4 @@
 """
-Companion chat app — floating bubble that expands into a chat window.
-
-Run:
-    pip install -r requirements.txt
-    python main.py
-
 First run: click the bubble, open Settings (gear icon), paste your Gemini
 API key (from https://aistudio.google.com/apikey), hit Save.
 """
