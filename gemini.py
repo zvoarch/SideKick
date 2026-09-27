@@ -1,4 +1,3 @@
-import os
 from datetime import datetime, timedelta
 from urllib.parse import urlencode, urlsplit
 
@@ -716,22 +715,3 @@ class ToolCallingGeminiClient:
             if text:
                 return text
         return "Sorry, I didn't get a reply. Could you say that again?"
-
-
-_legacy_client = None
-
-
-def ask_gemini(prompt, tools=None):
-    """Compatibility wrapper for the older `chat.py` UI."""
-    global _legacy_client
-    if _legacy_client is None:
-        try:
-            from dotenv import load_dotenv
-            load_dotenv()
-        except ImportError:
-            pass
-        api_key = os.getenv("API_KEY")
-        if not api_key:
-            raise ValueError("API_KEY is not set in the .env file")
-        _legacy_client = ToolCallingGeminiClient(api_key)
-    return _legacy_client.send_message(prompt)
