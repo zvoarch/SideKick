@@ -385,26 +385,24 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Settings")
         self.setFixedSize(420, 460)
         self.settings = current_settings
-
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_general_tab(current_settings), "General")
         self.tabs.addTab(self._build_apps_tab(current_settings), "Approved Applications")
         self.tabs.addTab(self._build_folders_tab(current_settings), "Approved Folders")
-        self.tabs.addTab(self._build_calendar_tab(current_settings), "Calendar")
 
-        save_btn = QPushButton("Save")
-        save_btn.clicked.connect(self._save_settings)
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        exit_btn = QPushButton("Exit Application")
-        exit_btn.setObjectName("exitButton")
-        exit_btn.clicked.connect(QApplication.instance().quit)
+        self.save_btn = QPushButton("Save")
+        self.save_btn.clicked.connect(self._save_settings)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        self.exit_btn = QPushButton("Exit Application")
+        self.exit_btn.setObjectName("exitButton")
+        self.exit_btn.clicked.connect(QApplication.instance().quit)
 
         btn_row = QHBoxLayout()
-        btn_row.addWidget(exit_btn)
+        btn_row.addWidget(self.exit_btn)
         btn_row.addStretch()
-        btn_row.addWidget(cancel_btn)
-        btn_row.addWidget(save_btn)
+        btn_row.addWidget(self.cancel_btn)
+        btn_row.addWidget(self.save_btn)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.tabs)
@@ -638,43 +636,6 @@ class SettingsDialog(QDialog):
         for item in list_widget.selectedItems():
             list_widget.takeItem(list_widget.row(item))
 
-    # ---- Google Calendar (stub) ---------------------------------------------
-    def _build_calendar_tab(self, current_settings: dict) -> QWidget:
-        self._calendar_connected = current_settings.get("google_calendar_connected", False)
-
-        status = QLabel("Connected" if self._calendar_connected else "Not connected")
-        status.setStyleSheet(
-            f"color: {'#3DDC97' if self._calendar_connected else '#8A8B95'}; font-weight: 600;"
-        )
-
-        note = QLabel(
-            "This will let your companion read and create events on your Google "
-            "Calendar. Wiring up the OAuth flow (Google Cloud credentials + "
-            "consent screen) is still to do — this tab is a placeholder so the "
-            "spot is reserved."
-        )
-        note.setWordWrap(True)
-        note.setStyleSheet("color: #8A8B95; font-size: 11px;")
-
-        connect_btn = QPushButton("Connect Google Calendar")
-        connect_btn.clicked.connect(self._connect_google_calendar)
-
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.addWidget(status)
-        layout.addWidget(connect_btn)
-        layout.addWidget(note)
-        layout.addStretch()
-        return tab
-
-    def _connect_google_calendar(self):
-        QMessageBox.information(
-            self,
-            "Google Calendar setup",
-            "Google Calendar sign-in is not configured yet. It needs OAuth "
-            "client credentials from Google Cloud before the app can connect.",
-        )
-
     def _save_settings(self):
         try:
             sync_approved_items(self.result_settings())
@@ -699,7 +660,6 @@ class SettingsDialog(QDialog):
             "theme": "dark" if self.theme_switch.isChecked() else "light",
             "approved_apps": apps,
             "approved_folders": folders,
-            "google_calendar_connected": self._calendar_connected,
         }
 
 

@@ -16,7 +16,6 @@ DEFAULTS = {
     "theme": "dark",
     "approved_apps": [],      # list of {"name": str, "path": str}
     "approved_folders": [],  # list of str paths
-    "google_calendar_connected": False,
 }
 
 

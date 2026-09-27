@@ -25,12 +25,6 @@ from tools.workspaces import (
     update_workspace,
 )
 from tools.websites import normalize_website_url, open_website
-from tools.google_calendar import (
-    CalendarRequestError,
-    CalendarSetupError,
-    get_calendar_events,
-    is_calendar_connected,
-)
 from shortcuts import list_installed_applications
 
 MODEL = "gemini-3.5-flash-lite"
@@ -64,6 +58,28 @@ def get_approved_applications_for_chat() -> dict:
     """List enabled approved application names without exposing their paths."""
     names = [app["name"] for app in list_approved_apps_locally()]
     return {"applications": names, "count": len(names)}
+
+
+def open_all_approved_applications_for_chat() -> dict:
+    """Open every enabled approved application in one local batch action."""
+    applications = list_approved_apps_locally()
+    if not applications:
+        return {"ok": True, "opened": [], "failed": [], "message": "No applications are approved yet."}
+
+    opened = []
+    failed = []
+    for application in applications:
+        result = open_approved_application_locally(application["name"])
+        if result.get("ok"):
+            opened.append(application["name"])
+        else:
+            failed.append(application["name"])
+    return {
+        "ok": not failed,
+        "opened": opened,
+        "failed": failed,
+        "message": f"Opened {len(opened)} of {len(applications)} approved applications.",
+    }
 
 
 def find_installed_applications_for_chat(query: str = "") -> dict:
@@ -271,69 +287,29 @@ def deactivate_workspace_for_chat() -> dict:
     return {"ok": True, "message": "There is no active workspace."}
 
 
-_CALENDAR_PERIODS = {"today", "week", "month"}
-
-
-def _calendar_context(period: str) -> dict:
-    if period not in _CALENDAR_PERIODS:
-        return {
-            "ok": False,
-            "period": period,
-            "message": "Choose one calendar period: today, week, or month.",
-            "events": [],
-        }
-    if not is_calendar_connected():
-        # No calendar data is available. Don't send setup/connection errors
-        # into the conversation or make an empty calendar look like no events.
-        return {}
-    try:
-        return {"ok": True, **get_calendar_events(period)}
-    except Exception as error:
-        if isinstance(error, CalendarSetupError):
-            return {}
-        if isinstance(error, (CalendarRequestError, ValueError)):
-            message = str(error)
-        else:
-            message = "Calendar is temporarily unavailable; workspace and task context are still available."
-        return {"ok": False, "period": period, "message": message, "events": []}
-
-
-def get_calendar_events_for_chat(
-    period: str,
-) -> dict:
-    """Get events in one bounded primary-calendar period: today, week, or month.
-
-    Args:
-        period: Use today, week, or month based on the user's requested range.
-    """
-    return _calendar_context(period)
-
-
-def get_current_context_for_chat(
-    period: str = "today",
-) -> dict:
-    """Get workspace, tasks, and calendar events for today, week, or month.
-
-    Args:
-        period: Use today, week, or month based on the user's requested range.
-    """
+def get_current_context_for_chat() -> dict:
+    """Get the active workspace and unfinished tasks for the current chat."""
     context = get_current_context()
     active = context["active_workspace"]
-    result = {
+    return {
         "active_workspace": active["name"] if active else None,
         "tasks": get_tasks_for_chat(),
     }
-    result["calendar"] = _calendar_context(period)
-    return result
 
 
 SYSTEM_INSTRUCTION = """
 You are Companion, a Gemini assistant in a desktop app. Use the tools below to
-help with the user's computer tasks, workspaces, tasks, and calendar. Be direct
+help with the user's computer tasks, workspaces, and tasks. Be direct
 and concise. Never claim an action succeeded unless its tool result says it did.
 For greetings or vague prompts like “help,” respond warmly and briefly, such as
 “I can help with day-to-day tasks—just say the word.” Do not list tools or app
 features unless the user asks what you can do.
+If asked who you are or what powers you, say you are Companion, the SideKick
+desktop assistant powered by Google Gemini. Do not claim Google built the entire
+SideKick application.
+Emojis are allowed naturally within a sentence when they fit, especially when
+the user uses them. Never say you are unable to use emojis, and avoid replies
+that consist only of an emoji.
 
 SETTINGS: If asked how to change the send box, button, or accent color, give the
 direct steps: open Settings, choose General, click Select Color beside Accent
@@ -346,6 +322,11 @@ APPLICATIONS: For an explicit request to open an application, call
 open_application_for_chat with its approved name. Only approved applications can
 be opened. If it is not approved, say that it must first be added in Settings.
 Treat “Edge,” “Microsoft Edge,” and “msedge” as the same approved app when present.
+If the user asks to open all of their approved apps, call
+open_all_approved_applications_for_chat once. It opens every enabled approved app
+in one batch; do not call open_application_for_chat repeatedly for this request.
+Report how many opened and name any that failed. Do not ask the user to repeat the
+request after the batch tool has run.
 If the user asks what applications they have or asks for a list of allowed,
 approved, or available apps, call get_approved_applications_for_chat and list
 the names it returns. Never say you cannot list approved apps. If the list is
@@ -402,21 +383,11 @@ and has no relevant unfinished tasks, offer a few ordinary, natural ideas or ask
 what they feel like doing. Do not suggest checking files, browsing workspaces,
 opening applications, or using app features unless the user asks about them.
 
-CALENDAR: Use get_calendar_events_for_chat for a direct question about events,
-meetings, or the user's schedule. When planning, use calendar data from
-get_current_context_for_chat if it contains any. Calendar tools may return no
-calendar data. Treat missing data as unknown: never say there are no events or
-invent events. Do not mention connection, setup, or missing tools. Continue the
-conversation normally using known tasks and workspace context; if needed, ask
-what plans the user wants to include.
-
 DATE: For an exact question about today's date, tomorrow, yesterday, or a
-weekday, call get_local_date_for_chat with 0 for today, 1 for tomorrow, or -1
-for yesterday. A date-only question does not require a Calendar event lookup.
 
 CONVERSATION: Chat naturally and answer general questions without calling a
-tool unless the request needs current local date, app, file, workspace, task,
-or calendar data. Do not use emojis in replies.
+tool unless the request needs current local date, app, file, workspace, or task
+data. Follow the emoji and identity guidance above.
 
 After a tool action, give one short, factual confirmation. If a tool fails, say
 what failed simply. Do not describe internal reasoning.
@@ -424,6 +395,7 @@ what failed simply. Do not describe internal reasoning.
 
 CHAT_TOOLS = [
             open_application_for_chat,
+            open_all_approved_applications_for_chat,
             open_website_for_chat,
             get_approved_applications_for_chat,
             find_installed_applications_for_chat,
@@ -439,7 +411,6 @@ CHAT_TOOLS = [
             list_workspaces_for_chat,
             open_workspace_for_chat,
             deactivate_workspace_for_chat,
-            get_calendar_events_for_chat,
             get_current_context_for_chat,
 ]
 
