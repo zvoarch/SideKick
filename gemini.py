@@ -269,6 +269,130 @@ def add_website_to_workspace_for_chat(name: str, website: str) -> dict:
     }
 
 
+def _workspace_name_changes(current, additions, removals):
+    if isinstance(additions, str):
+        additions = [additions]
+    if isinstance(removals, str):
+        removals = [removals]
+    additions = additions or []
+    removals = removals or []
+    if not isinstance(additions, (list, tuple)) or not isinstance(removals, (list, tuple)):
+        raise ValueError("Workspace item changes must be names.")
+    names = list(current)
+    remove_keys = {
+        item.strip().casefold()
+        for item in removals
+        if isinstance(item, str) and item.strip()
+    }
+    names = [name for name in names if name.casefold() not in remove_keys]
+    seen = {name.casefold() for name in names}
+    for item in additions:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("Workspace item changes must be non-empty names.")
+        item = item.strip()
+        if item.casefold() not in seen:
+            names.append(item)
+            seen.add(item.casefold())
+    return names
+
+
+def _workspace_website_changes(current, additions, removals):
+    if isinstance(additions, str):
+        additions = [additions]
+    if isinstance(removals, str):
+        removals = [removals]
+    additions = additions or []
+    removals = removals or []
+    if not isinstance(additions, (list, tuple)) or not isinstance(removals, (list, tuple)):
+        raise ValueError("Workspace website changes must be URLs.")
+    websites = [normalize_website_url(url) for url in current]
+    remove_urls = {normalize_website_url(url).casefold() for url in removals}
+    websites = [url for url in websites if url.casefold() not in remove_urls]
+    seen = {url.casefold() for url in websites}
+    for value in additions:
+        url = normalize_website_url(value)
+        if url.casefold() not in seen:
+            websites.append(url)
+            seen.add(url.casefold())
+    return websites
+
+
+def edit_workspace_for_chat(
+    name: str,
+    new_name: str | None = None,
+    add_applications: list[str] | None = None,
+    remove_applications: list[str] | None = None,
+    add_folders: list[str] | None = None,
+    remove_folders: list[str] | None = None,
+    add_websites: list[str] | None = None,
+    remove_websites: list[str] | None = None,
+) -> dict:
+    """Rename or add/remove approved apps, folders, and websites in a saved workspace.
+
+    This edits only the saved links. It does not open or activate the workspace.
+
+    Args:
+        name: The existing saved workspace name.
+        new_name: Optional replacement workspace name.
+        add_applications: Approved application names to add.
+        remove_applications: Application names to remove.
+        add_folders: Approved folder names to add.
+        remove_folders: Folder names to remove.
+        add_websites: Website URLs to add.
+        remove_websites: Website URLs to remove.
+    """
+    workspace = get_workspace(name)
+    if workspace is None:
+        return {
+            "ok": False,
+            "message": f"No saved workspace named {name} was found.",
+            "available_workspaces": list_workspaces(),
+        }
+
+    applications = None
+    folders = None
+    websites = None
+    try:
+        if add_applications is not None or remove_applications is not None:
+            applications = _workspace_name_changes(
+                workspace["applications"], add_applications, remove_applications
+            )
+        if add_folders is not None or remove_folders is not None:
+            folders = _workspace_name_changes(
+                workspace["folders"], add_folders, remove_folders
+            )
+        if add_websites is not None or remove_websites is not None:
+            websites = _workspace_website_changes(
+                workspace["websites"], add_websites, remove_websites
+            )
+    except ValueError as error:
+        return {"ok": False, "message": str(error)}
+
+    if new_name is None and applications is None and folders is None and websites is None:
+        return {"ok": False, "message": "Tell me what to change in the workspace."}
+
+    result = update_workspace(
+        name,
+        applications=applications,
+        folders=folders,
+        websites=websites,
+        new_name=new_name,
+    )
+    if result is None:
+        return {"ok": False, "message": f"No saved workspace named {name} was found."}
+    if not result["ok"]:
+        return result
+    return {
+        "ok": True,
+        "name": result["name"],
+        "applications": result["applications"],
+        "folders": result["folders"],
+        "website_count": len(result["websites"]),
+        "is_active": result["is_active"],
+        "message": "Updated the saved workspace. It was not opened.",
+    }
+
+
 def list_workspaces_for_chat() -> list[str]:
     """List saved workspace names."""
     return list_workspaces()
@@ -396,6 +520,11 @@ create the requested workspace. If none are saved, say so and offer to create
 one. Do not search files or suggest file search to recover from a missing
 workspace. Do not create a workspace until the user agrees. The deactivate tool
 clears the active workspace context but does not close apps.
+If the user asks to edit a saved workspace, first call get_workspace_for_chat to
+inspect its current app/folder names, then call edit_workspace_for_chat with only
+the requested additions, removals, or rename. Preserve all unspecified items.
+Applications and folders added to a workspace must already be approved. Editing
+only changes saved workspace contents; it never opens or activates the workspace.
 
 ACTIVITY HISTORY: If the user asks what they were last working on or asks about
 recent app/workspace activity, call get_recent_activity_for_chat. It contains
@@ -468,6 +597,7 @@ CHAT_TOOLS = [
             complete_task_for_chat,
             create_workspace_for_chat,
             get_workspace_for_chat,
+            edit_workspace_for_chat,
             add_website_to_workspace_for_chat,
             list_workspaces_for_chat,
             open_workspace_for_chat,

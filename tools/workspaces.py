@@ -226,8 +226,8 @@ def open_workspace(name):
     }
 
 
-def update_workspace(name, applications=None, folders=None, websites=None):
-    """Replace a workspace's linked approved app, folder, or website names."""
+def update_workspace(name, applications=None, folders=None, websites=None, new_name=None):
+    """Update a saved workspace name and/or its linked approved items and websites."""
     with database_connection() as connection:
         row = connection.execute(
             "SELECT id FROM workspaces WHERE name = ? COLLATE NOCASE", (name,)
@@ -235,6 +235,17 @@ def update_workspace(name, applications=None, folders=None, websites=None):
         if row is None:
             return None
         workspace_id = row["id"]
+
+        if new_name is not None:
+            if not isinstance(new_name, str) or not new_name.strip():
+                return {"ok": False, "message": "A workspace name is required."}
+            new_name = new_name.strip()
+            duplicate = connection.execute(
+                "SELECT 1 FROM workspaces WHERE name = ? COLLATE NOCASE AND id != ?",
+                (new_name, workspace_id),
+            ).fetchone()
+            if duplicate:
+                return {"ok": False, "message": f"A workspace named {new_name} already exists."}
 
         # Validate every replacement before changing anything, so updates are atomic.
         application_ids = None
@@ -257,6 +268,12 @@ def update_workspace(name, applications=None, folders=None, websites=None):
                 website_urls = _website_list(websites)
             except ValueError as error:
                 return {"ok": False, "message": str(error)}
+
+        if new_name is not None:
+            connection.execute(
+                "UPDATE workspaces SET name = ? WHERE id = ?",
+                (new_name, workspace_id),
+            )
 
         if application_ids is not None:
             connection.execute(
