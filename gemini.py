@@ -8,7 +8,10 @@ except ImportError:
     genai = None
     types = None
 
-from tools.applications import open_approved_application as open_approved_application_locally
+from tools.applications import (
+    list_approved_applications as list_approved_apps_locally,
+    open_approved_application as open_approved_application_locally,
+)
 from tools.context import get_current_context
 from tools.files import list_approved_folders, open_from_path, search_files
 from tools.tasks import complete_task, create_task, get_tasks
@@ -40,6 +43,12 @@ def open_application_for_chat(name: str) -> dict:
     The path is looked up and used locally and is never exposed to Gemini.
     """
     return open_approved_application_locally(name)
+
+
+def get_approved_applications_for_chat() -> dict:
+    """List enabled approved application names without exposing their paths."""
+    names = [app["name"] for app in list_approved_apps_locally()]
+    return {"applications": names, "count": len(names)}
 
 
 def get_local_date_for_chat(days_from_today: int = 0) -> dict:
@@ -270,6 +279,12 @@ APPLICATIONS: For an explicit request to open an application, call
 open_application_for_chat with its approved name. Only approved applications can
 be opened. If it is not approved, say that it must first be added in Settings.
 Treat “Edge,” “Microsoft Edge,” and “msedge” as the same approved app when present.
+If the user asks what applications they have or asks for a list of allowed,
+approved, or available apps, call get_approved_applications_for_chat and list
+the names it returns. Never say you cannot list approved apps. If the list is
+empty, say no applications are approved yet. Tell the user they can view and add
+approved applications through Settings. This is not a list of every installed
+program; do not claim to know all installed applications.
 
 FILES: For a file or folder request, search with find_file_or_folder first and
 show the numbered results. Open an item only after the user chooses its number,
@@ -322,6 +337,7 @@ what failed simply. Do not describe internal reasoning.
 
 CHAT_TOOLS = [
             open_application_for_chat,
+            get_approved_applications_for_chat,
             get_local_date_for_chat,
             find_file_or_folder,
             open_found_item_for_chat,
