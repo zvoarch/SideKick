@@ -305,6 +305,29 @@ def update_workspace(name, applications=None, folders=None, websites=None, new_n
         return {"ok": True, **_workspace_data(connection, row)}
 
 
+def delete_workspace(name):
+    """Delete a saved workspace and its linked app, folder, and website rows."""
+    if not isinstance(name, str) or not name.strip():
+        return {"ok": False, "message": "A workspace name is required."}
+    with database_connection() as connection:
+        row = connection.execute(
+            "SELECT name FROM workspaces WHERE name = ? COLLATE NOCASE",
+            (name.strip(),),
+        ).fetchone()
+        if row is None:
+            return {"ok": False, "message": f"No saved workspace named {name.strip()} was found."}
+        deleted_name = row["name"]
+        connection.execute(
+            "DELETE FROM workspaces WHERE name = ? COLLATE NOCASE",
+            (deleted_name,),
+        )
+        return {
+            "ok": True,
+            "name": deleted_name,
+            "message": f"Deleted the {deleted_name} workspace. Its apps and folders were not closed or removed from approvals.",
+        }
+
+
 def close_workspace():
     """Clear the active workspace. Not currently exposed to Gemini."""
     with database_connection() as connection:

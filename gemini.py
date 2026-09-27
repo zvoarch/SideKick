@@ -19,6 +19,7 @@ from tools.tasks import complete_task, create_task, get_tasks
 from tools.workspaces import (
     close_workspace,
     create_workspace,
+    delete_workspace,
     get_workspace,
     list_workspaces,
     open_workspace,
@@ -434,6 +435,14 @@ def deactivate_workspace_for_chat() -> dict:
     return {"ok": True, "message": "There is no active workspace."}
 
 
+def delete_workspace_for_chat(name: str) -> dict:
+    """Delete a saved workspace by its exact name, without closing its apps."""
+    result = delete_workspace(name)
+    if result.get("ok"):
+        return result
+    return {"ok": False, "message": result.get("message", "The workspace could not be deleted.")}
+
+
 def get_current_context_for_chat() -> dict:
     """Get the active workspace and unfinished tasks for the current chat."""
     context = get_current_context()
@@ -524,6 +533,12 @@ inspect its current app/folder names, then call edit_workspace_for_chat with onl
 the requested additions, removals, or rename. Preserve all unspecified items.
 Applications and folders added to a workspace must already be approved. Editing
 only changes saved workspace contents; it never opens or activates the workspace.
+If the user explicitly asks to delete a saved workspace, call
+list_workspaces_for_chat when the requested name is ambiguous; otherwise call
+delete_workspace_for_chat with the requested name. Never delete a workspace just
+because the user mentions it. Deleting a workspace removes its saved links, but
+does not close apps or remove approved apps/folders from Settings. Confirm the
+deletion briefly.
 
 ACTIVITY HISTORY: If the user asks what they were last working on or asks about
 recent app/workspace activity, call get_recent_activity_for_chat. It contains
@@ -601,6 +616,7 @@ CHAT_TOOLS = [
             list_workspaces_for_chat,
             open_workspace_for_chat,
             deactivate_workspace_for_chat,
+            delete_workspace_for_chat,
             get_current_context_for_chat,
 ]
 
