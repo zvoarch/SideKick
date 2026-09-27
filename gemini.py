@@ -1,0 +1,400 @@
+import os
+from datetime import datetime, timedelta
+
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    genai = None
+    types = None
+
+from tools.applications import open_approved_application as open_approved_application_locally
+from tools.context import get_current_context
+from tools.files import list_approved_folders, open_from_path, search_files
+from tools.tasks import complete_task, create_task, get_tasks
+from tools.workspaces import (
+    close_workspace,
+    create_workspace,
+    get_workspace,
+    list_workspaces,
+    open_workspace,
+)
+from tools.google_calendar import (
+    CalendarRequestError,
+    CalendarSetupError,
+    get_calendar_events,
+    is_calendar_connected,
+)
+
+MODEL = "gemini-3.5-flash-lite"
+
+# Search paths stay in this process. Gemini only receives numbered names/types.
+_search_result_paths: list[str] = []
+
+
+def open_application_for_chat(name: str) -> dict:
+    """Open an approved application by its saved name or executable name.
+
+    Microsoft Edge may be saved as "msedge"; treat "Edge", "msedge", and
+    "Microsoft Edge" as the same app, but only if Edge is approved in settings.
+    The path is looked up and used locally and is never exposed to Gemini.
+    """
+    return open_approved_application_locally(name)
+
+
+def get_local_date_for_chat(days_from_today: int = 0) -> dict:
+    """Return the user's local date and weekday for today or a relative day.
+
+    Args:
+        days_from_today: 0 for today, 1 for tomorrow, -1 for yesterday.
+    """
+    local_today = datetime.now().astimezone().date()
+    target = local_today + timedelta(days=days_from_today)
+    return {"date": target.isoformat(), "day_of_week": target.strftime("%A")}
+
+
+def find_file_or_folder(query: str) -> dict:
+    """Search approved folders and return numbered names/types, never paths."""
+    global _search_result_paths
+    if not list_approved_folders():
+        _search_result_paths = []
+        return {
+            "ok": False,
+            "message": "No approved folders are enabled for searching. Add one in local settings first.",
+            "results": [],
+        }
+
+    matches = search_files(query)
+    _search_result_paths = [match["path"] for match in matches]
+    return {
+        "ok": True,
+        "results": [
+            {"number": index, "name": match["name"], "type": match["type"],
+             "score": match["score"]}
+            for index, match in enumerate(matches, start=1)
+        ],
+        "message": "" if matches else "No matching files or folders were found in approved folders.",
+    }
+
+
+def open_found_item_for_chat(number: int) -> dict:
+    """Open only an item from the latest search results, selected by its displayed number."""
+    if not isinstance(number, int) or isinstance(number, bool):
+        return {"ok": False, "message": "Choose a numbered item from the latest search results."}
+    if number < 1 or number > len(_search_result_paths):
+        return {"ok": False, "message": "That number is not in the latest search results. Search again."}
+    try:
+        open_from_path(_search_result_paths[number - 1])
+    except (OSError, AttributeError):
+        return {"ok": False, "message": "Windows could not open that search result."}
+    return {"ok": True, "number": number, "message": f"Opened search result {number}."}
+
+
+def create_task_for_chat(name: str, description: str = "") -> dict:
+    """Create a task with an optional description in the local task list."""
+    task = create_task(name, description or None)
+    if task is None:
+        return {"ok": False, "message": "A task name is required."}
+    return {"name": task["name"], "description": task["description"],
+            "completed": task["completed"]}
+
+
+def get_tasks_for_chat() -> list[dict]:
+    """Return only unfinished tasks for current planning and task requests."""
+    return [
+        {"name": task["name"], "description": task["description"],
+         "completed": task["completed"]}
+        for task in get_tasks() if not task["completed"]
+    ]
+
+
+def complete_task_for_chat(name: str) -> dict:
+    """Mark a task completed by its name."""
+    task = complete_task(name)
+    if task is None:
+        return {"ok": False, "message": f"No unfinished task named {name} was found."}
+    return {"ok": True, "name": task["name"], "completed": task["completed"]}
+
+
+def create_workspace_for_chat(
+    name: str,
+    applications: list[str] | None = None,
+    folders: list[str] | None = None,
+    websites: list[str] | None = None,
+) -> dict:
+    """Save a workspace from approved names only; this does not open or activate it."""
+    result = create_workspace(name, applications, folders, websites)
+    if not result["ok"]:
+        return {"ok": False, "message": result["message"]}
+    return {
+        "ok": True,
+        "name": result["name"],
+        "applications": result["applications"],
+        "folders": result["folders"],
+        "website_count": len(result["websites"]),
+    }
+
+
+def get_workspace_for_chat(name: str) -> dict:
+    """Get workspace names and linked item names without returning filesystem paths or URLs."""
+    workspace = get_workspace(name)
+    if workspace is None:
+        available = list_workspaces()
+        if available:
+            return {
+                "ok": False,
+                "message": f"No saved workspace named {name} was found.",
+                "available_workspaces": available,
+            }
+        return {
+            "ok": False,
+            "message": "There are no saved workspaces yet.",
+            "available_workspaces": [],
+        }
+    return {
+        "ok": True,
+        "name": workspace["name"],
+        "applications": workspace["applications"],
+        "folders": workspace["folders"],
+        "website_count": len(workspace["websites"]),
+        "is_active": workspace["is_active"],
+    }
+
+
+def list_workspaces_for_chat() -> list[str]:
+    """List saved workspace names."""
+    return list_workspaces()
+
+
+def open_workspace_for_chat(name: str) -> dict:
+    """Activate a workspace and open its locally linked approved items."""
+    result = open_workspace(name)
+    if not result["ok"]:
+        available = list_workspaces()
+        if available:
+            return {
+                "ok": False,
+                "name": name,
+                "message": f"No saved workspace named {name} was found.",
+                "available_workspaces": available,
+            }
+        return {
+            "ok": False,
+            "name": name,
+            "message": "There are no saved workspaces yet.",
+            "available_workspaces": [],
+        }
+    return {
+        "ok": result["ok"],
+        "name": result.get("name"),
+        "message": result["message"],
+        "opened_applications": result.get("opened_applications", []),
+        "opened_folders": result.get("opened_folders", []),
+        "opened_websites": result.get("opened_websites", 0),
+        "issues": result.get("issues", []),
+    }
+
+
+def deactivate_workspace_for_chat() -> dict:
+    """Clear the active workspace context without closing any applications or folders."""
+    if close_workspace():
+        return {"ok": True, "message": "The active workspace was deactivated."}
+    return {"ok": True, "message": "There is no active workspace."}
+
+
+_CALENDAR_PERIODS = {"today", "week", "month"}
+
+
+def _calendar_context(period: str) -> dict:
+    if period not in _CALENDAR_PERIODS:
+        return {
+            "ok": False,
+            "period": period,
+            "message": "Choose one calendar period: today, week, or month.",
+            "events": [],
+        }
+    if not is_calendar_connected():
+        # No calendar data is available. Don't send setup/connection errors
+        # into the conversation or make an empty calendar look like no events.
+        return {}
+    try:
+        return {"ok": True, **get_calendar_events(period)}
+    except Exception as error:
+        if isinstance(error, CalendarSetupError):
+            return {}
+        if isinstance(error, (CalendarRequestError, ValueError)):
+            message = str(error)
+        else:
+            message = "Calendar is temporarily unavailable; workspace and task context are still available."
+        return {"ok": False, "period": period, "message": message, "events": []}
+
+
+def get_calendar_events_for_chat(
+    period: str,
+) -> dict:
+    """Get events in one bounded primary-calendar period: today, week, or month.
+
+    Args:
+        period: Use today, week, or month based on the user's requested range.
+    """
+    return _calendar_context(period)
+
+
+def get_current_context_for_chat(
+    period: str = "today",
+) -> dict:
+    """Get workspace, tasks, and calendar events for today, week, or month.
+
+    Args:
+        period: Use today, week, or month based on the user's requested range.
+    """
+    context = get_current_context()
+    active = context["active_workspace"]
+    result = {
+        "active_workspace": active["name"] if active else None,
+        "tasks": get_tasks_for_chat(),
+    }
+    result["calendar"] = _calendar_context(period)
+    return result
+
+
+SYSTEM_INSTRUCTION = """
+You are Companion, a Gemini assistant in a desktop app. Use the tools below to
+help with the user's computer tasks, workspaces, tasks, and calendar. Be direct
+and concise. Never claim an action succeeded unless its tool result says it did.
+For greetings or vague prompts like “help,” respond warmly and briefly, such as
+“I can help with day-to-day tasks—just say the word.” Do not list tools or app
+features unless the user asks what you can do.
+
+APPLICATIONS: For an explicit request to open an application, call
+open_application_for_chat with its approved name. Only approved applications can
+be opened. If it is not approved, say that it must first be added in Settings.
+Treat “Edge,” “Microsoft Edge,” and “msedge” as the same approved app when present.
+
+FILES: For a file or folder request, search with find_file_or_folder first and
+show the numbered results. Open an item only after the user chooses its number,
+using open_found_item_for_chat. Never ask for, expose, or pass a filesystem path.
+
+WORKSPACES: When asked to open a workspace, check saved names with
+list_workspaces_for_chat, then call open_workspace_for_chat for the requested
+saved workspace. Creating a workspace only saves it. If the requested name is
+not saved, report that clearly, mention any available workspaces, and offer to
+create the requested workspace. If none are saved, say so and offer to create
+one. Do not search files or suggest file search to recover from a missing
+workspace. Do not create a workspace until the user agrees. The deactivate tool
+clears the active workspace context but does not close apps.
+
+TASKS: Use get_tasks_for_chat for task lists; it contains unfinished tasks only.
+Use create_task_for_chat to add one and complete_task_for_chat to complete one.
+If the user says they finished an activity, check for a clearly matching
+unfinished task and complete it. Do not guess or complete an unrelated task. If
+there is no clear match, respond conversationally without using a task tool.
+After adding or completing a task, don't stop at the confirmation: also respond
+to the rest of the user's message and keep the conversation going with one
+relevant, natural follow-up. For example, after adding grocery shopping, ask if
+they want to add a day or the items they need. Don't invent task details or add
+extra tasks unless the user asks.
+When helping plan the day, call get_current_context_for_chat and base suggestions
+on unfinished tasks. Do not bring up completed tasks. If the user asks what to do
+and has no relevant unfinished tasks, offer a few ordinary, natural ideas or ask
+what they feel like doing. Do not suggest checking files, browsing workspaces,
+opening applications, or using app features unless the user asks about them.
+
+CALENDAR: Use get_calendar_events_for_chat for a direct question about events,
+meetings, or the user's schedule. When planning, use calendar data from
+get_current_context_for_chat if it contains any. Calendar tools may return no
+calendar data. Treat missing data as unknown: never say there are no events or
+invent events. Do not mention connection, setup, or missing tools. Continue the
+conversation normally using known tasks and workspace context; if needed, ask
+what plans the user wants to include.
+
+DATE: For an exact question about today's date, tomorrow, yesterday, or a
+weekday, call get_local_date_for_chat with 0 for today, 1 for tomorrow, or -1
+for yesterday. A date-only question does not require a Calendar event lookup.
+
+CONVERSATION: Chat naturally and answer general questions without calling a
+tool unless the request needs current local date, app, file, workspace, task,
+or calendar data.
+
+After a tool action, give one short, factual confirmation. If a tool fails, say
+what failed simply. Do not describe internal reasoning.
+""".strip()
+
+CHAT_TOOLS = [
+            open_application_for_chat,
+            get_local_date_for_chat,
+            find_file_or_folder,
+            open_found_item_for_chat,
+            create_task_for_chat,
+            get_tasks_for_chat,
+            complete_task_for_chat,
+            create_workspace_for_chat,
+            get_workspace_for_chat,
+            list_workspaces_for_chat,
+            open_workspace_for_chat,
+            deactivate_workspace_for_chat,
+            get_calendar_events_for_chat,
+            get_current_context_for_chat,
+]
+
+
+class ToolCallingGeminiClient:
+    """Gemini chat session with the app's local, database-backed tools."""
+
+    def __init__(self, api_key: str, model: str = MODEL):
+        if genai is None or types is None:
+            raise RuntimeError(
+                "The 'google-genai' package is not installed. Install it in this "
+                "Python environment with: python -m pip install google-genai"
+            )
+        if not api_key:
+            raise ValueError("A Gemini API key is required.")
+        self.model = model
+        self.client = genai.Client(api_key=api_key)
+        self.chat = self._create_chat()
+
+    def _create_chat(self):
+        config = types.GenerateContentConfig(
+            system_instruction=SYSTEM_INSTRUCTION,
+            tools=CHAT_TOOLS,
+            max_output_tokens=256,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                maximum_remote_calls=4,
+            ),
+        )
+        return self.client.chats.create(model=self.model, config=config)
+
+    def send_message(self, prompt: str) -> str:
+        response = self.chat.send_message(prompt)
+        # Access text parts directly: response.text warns when a response also
+        # contains a function_call part, which is normal for tool conversations.
+        for candidate in response.candidates or []:
+            content = candidate.content
+            if content is None:
+                continue
+            text = "".join(
+                part.text for part in content.parts or []
+                if part.text and not getattr(part, "thought", False)
+            ).strip()
+            if text:
+                return text
+        return "Sorry, I didn't get a reply. Could you say that again?"
+
+
+_legacy_client = None
+
+
+def ask_gemini(prompt, tools=None):
+    """Compatibility wrapper for the older `chat.py` UI."""
+    global _legacy_client
+    if _legacy_client is None:
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except ImportError:
+            pass
+        api_key = os.getenv("API_KEY")
+        if not api_key:
+            raise ValueError("API_KEY is not set in the .env file")
+        _legacy_client = ToolCallingGeminiClient(api_key)
+    return _legacy_client.send_message(prompt)
