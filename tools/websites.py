@@ -1,6 +1,7 @@
 """Local website validation and browser launching helpers."""
 
 from urllib.parse import urlsplit, urlunsplit
+import os
 import webbrowser
 
 
@@ -37,9 +38,16 @@ def open_website(url):
     """Open an HTTP(S) URL in the user's default browser."""
     normalized_url = normalize_website_url(url)
     try:
-        opened = webbrowser.open(normalized_url, new=2)
+        if os.name == "nt":
+            # Let Windows use its registered URL handler. This is more reliable
+            # than Python's browser discovery when the default browser is Edge
+            # or a per-user browser installation.
+            os.startfile(normalized_url)
+            opened = True
+        else:
+            opened = webbrowser.open(normalized_url, new=2)
     except (OSError, webbrowser.Error):
         opened = False
     if not opened:
         return {"ok": False, "message": "The website could not be opened in the default browser."}
-    return {"ok": True, "message": "Opened the website in the default browser."}
+    return {"ok": True, "message": "Sent the website to the default browser."}

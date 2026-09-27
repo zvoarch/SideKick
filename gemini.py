@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timedelta
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 try:
     from google import genai
@@ -64,6 +64,16 @@ def open_website_for_chat(url: str) -> dict:
     if result["ok"]:
         return {"ok": True, "url": normalize_website_url(url), "message": result["message"]}
     return result
+
+
+def open_youtube_search_for_chat(query: str) -> dict:
+    """Open YouTube search results for a topic in the default browser."""
+    query = query.strip()
+    if not query:
+        return {"ok": False, "message": "A YouTube search topic is required."}
+    return open_website_for_chat(
+        "https://www.youtube.com/results?" + urlencode({"search_query": query})
+    )
 
 
 def get_approved_applications_for_chat() -> dict:
@@ -342,9 +352,8 @@ features unless the user asks what you can do.
 If asked who you are or what powers you, say you are Companion, the SideKick
 desktop assistant powered by Google Gemini. Do not claim Google built the entire
 SideKick application.
-Emojis are allowed naturally within a sentence when they fit, especially when
-the user uses them. Never say you are unable to use emojis, and avoid replies
-that consist only of an emoji.
+Do not use emojis by default. Use one only when the user used an emoji in their
+message or explicitly asks for one; never add decorative emoji to routine replies.
 
 SETTINGS: If asked how to change the send box, button, or accent color, give the
 direct steps: open Settings, choose General, click Select Color beside Accent
@@ -399,7 +408,15 @@ WEBSITES: For a request to find a current website, link, article, or set of
 search results, use search_web_for_chat and base links on its returned sources.
 Do not invent URLs. If the user asks to open a website, use
 open_website_for_chat with a URL from search results or a clearly specified URL.
-Bare domain names such as "reddit.com" may be opened directly; if the user gives
+If the user asks to find or watch a YouTube video/build/tutorial, use
+open_youtube_search_for_chat with the topic to open YouTube results directly.
+This also applies when the user accepts an offer to open the browser after a
+YouTube search request; open the results for the original topic, not the YouTube
+homepage. If web search fails, do not invent channels or claim to have found
+videos; offer the direct YouTube search page instead. If the user says an open
+did not work, retry once with the relevant direct search URL and report only what
+the tool confirms.
+Bare domain names such as “reddit.com” may be opened directly; if the user gives
 only a site name, use search_web_for_chat to find its official site first. For
 requests such as opening Reddit's top posts on a topic, prefer opening a relevant
 Reddit search/results page so the user can see the list in their browser. Only
@@ -439,6 +456,7 @@ CHAT_TOOLS = [
             open_application_for_chat,
             open_all_approved_applications_for_chat,
             open_website_for_chat,
+            open_youtube_search_for_chat,
             get_approved_applications_for_chat,
             find_installed_applications_for_chat,
             get_local_date_for_chat,
