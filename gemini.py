@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 try:
     from google import genai
@@ -21,7 +22,9 @@ from tools.workspaces import (
     get_workspace,
     list_workspaces,
     open_workspace,
+    update_workspace,
 )
+from tools.websites import normalize_website_url, open_website
 from tools.google_calendar import (
     CalendarRequestError,
     CalendarSetupError,
@@ -43,6 +46,17 @@ def open_application_for_chat(name: str) -> dict:
     The path is looked up and used locally and is never exposed to Gemini.
     """
     return open_approved_application_locally(name)
+
+
+def open_website_for_chat(url: str) -> dict:
+    """Open a user-requested HTTP(S) website in the default browser."""
+    try:
+        result = open_website(url)
+    except ValueError as error:
+        return {"ok": False, "message": str(error)}
+    if result["ok"]:
+        return {"ok": True, "url": normalize_website_url(url), "message": result["message"]}
+    return result
 
 
 def get_approved_applications_for_chat() -> dict:
@@ -167,6 +181,37 @@ def get_workspace_for_chat(name: str) -> dict:
         "folders": workspace["folders"],
         "website_count": len(workspace["websites"]),
         "is_active": workspace["is_active"],
+    }
+
+
+def add_website_to_workspace_for_chat(name: str, website: str) -> dict:
+    """Add a website URL to an existing workspace without opening it."""
+    workspace = get_workspace(name)
+    if workspace is None:
+        available = list_workspaces()
+        return {
+            "ok": False,
+            "message": f"No saved workspace named {name} was found.",
+            "available_workspaces": available,
+        }
+    try:
+        url = normalize_website_url(website)
+    except ValueError as error:
+        return {"ok": False, "message": str(error)}
+
+    websites = workspace["websites"]
+    if all(existing.casefold() != url.casefold() for existing in websites):
+        websites.append(url)
+    result = update_workspace(name, websites=websites)
+    if result is None:
+        return {"ok": False, "message": f"No saved workspace named {name} was found."}
+    if not result["ok"]:
+        return result
+    return {
+        "ok": True,
+        "name": result["name"],
+        "website_count": len(result["websites"]),
+        "message": "The website was added to the workspace. It was not opened.",
     }
 
 
@@ -306,6 +351,20 @@ one. Do not search files or suggest file search to recover from a missing
 workspace. Do not create a workspace until the user agrees. The deactivate tool
 clears the active workspace context but does not close apps.
 
+WEBSITES: For a request to find a current website, link, article, or set of
+search results, use search_web_for_chat and base links on its returned sources.
+Do not invent URLs. If the user asks to open a website, use
+open_website_for_chat with a URL from search results or a clearly specified URL.
+Bare domain names such as "reddit.com" may be opened directly; if the user gives
+only a site name, use search_web_for_chat to find its official site first. For
+requests such as opening Reddit's top posts on a topic, prefer opening a relevant
+Reddit search/results page so the user can see the list in their browser. Only
+open a site when the user asks to open it. To add a website to an existing
+workspace, find its URL when needed, then use
+add_website_to_workspace_for_chat. Adding a site only saves it; it does not open
+the workspace or launch the browser. When creating an agreed workspace with a
+website, pass the resolved URL in create_workspace_for_chat's websites argument.
+
 TASKS: Use get_tasks_for_chat for task lists; it contains unfinished tasks only.
 Use create_task_for_chat to add one and complete_task_for_chat to complete one.
 If the user says they finished an activity, check for a clearly matching
@@ -344,6 +403,7 @@ what failed simply. Do not describe internal reasoning.
 
 CHAT_TOOLS = [
             open_application_for_chat,
+            open_website_for_chat,
             get_approved_applications_for_chat,
             get_local_date_for_chat,
             find_file_or_folder,
@@ -353,6 +413,7 @@ CHAT_TOOLS = [
             complete_task_for_chat,
             create_workspace_for_chat,
             get_workspace_for_chat,
+            add_website_to_workspace_for_chat,
             list_workspaces_for_chat,
             open_workspace_for_chat,
             deactivate_workspace_for_chat,
@@ -379,13 +440,79 @@ class ToolCallingGeminiClient:
     def _create_chat(self):
         config = types.GenerateContentConfig(
             system_instruction=SYSTEM_INSTRUCTION,
-            tools=CHAT_TOOLS,
+            # Google Search grounding is exposed through a local function which
+            # makes its own Search-only request. This keeps it separate from the
+            # chat's automatic Python function calling configuration.
+            tools=CHAT_TOOLS + [self.search_web_for_chat],
             max_output_tokens=256,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(
                 maximum_remote_calls=4,
             ),
         )
         return self.client.chats.create(model=self.model, config=config)
+
+    def search_web_for_chat(self, query: str) -> dict:
+        """Search current web results with Gemini Google Search grounding.
+
+        Args:
+            query: A concise description of the site, link, or information to find.
+        """
+        query = query.strip()
+        if not query:
+            return {"ok": False, "message": "A search query is required.", "results": []}
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=(
+                    f"Search the web for: {query}. Summarize the most relevant current "
+                    "results briefly. Do not make up links; cite the relevant pages."
+                ),
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    max_output_tokens=512,
+                ),
+            )
+        except Exception:
+            return {
+                "ok": False,
+                "message": "Web search is temporarily unavailable. Try again shortly.",
+                "results": [],
+            }
+
+        summary_parts = []
+        results = []
+        seen_urls = set()
+        for candidate in response.candidates or []:
+            content = candidate.content
+            if content is not None:
+                summary_parts.extend(
+                    part.text for part in content.parts or []
+                    if part.text and not getattr(part, "thought", False)
+                )
+            metadata = getattr(candidate, "grounding_metadata", None)
+            for chunk in getattr(metadata, "grounding_chunks", None) or []:
+                web_result = getattr(chunk, "web", None)
+                if web_result is None:
+                    continue
+                url = getattr(web_result, "uri", None)
+                title = getattr(web_result, "title", None)
+                if not url or urlsplit(url).scheme not in {"http", "https"}:
+                    continue
+                key = url.casefold()
+                if key in seen_urls:
+                    continue
+                seen_urls.add(key)
+                results.append({"title": title or url, "url": url})
+                if len(results) >= 10:
+                    break
+            if len(results) >= 10:
+                break
+
+        return {
+            "ok": True,
+            "summary": " ".join(summary_parts).strip(),
+            "results": results,
+        }
 
     def send_message(self, prompt: str) -> str:
         response = self.chat.send_message(prompt)

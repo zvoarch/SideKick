@@ -2,6 +2,7 @@ import webbrowser
 from .applications import open_approved_application
 from .database import database_connection
 from .files import open_approved_folder
+from .websites import normalize_website_url
 
 
 def _name_list(values):
@@ -19,6 +20,22 @@ def _name_list(values):
                 names.append(name)
                 seen.add(key)
     return names
+
+
+def _website_list(values):
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    urls = []
+    seen = set()
+    for value in values:
+        url = normalize_website_url(value)
+        key = url.casefold()
+        if key not in seen:
+            urls.append(url)
+            seen.add(key)
+    return urls
 
 
 def _workspace_data(connection, workspace_row):
@@ -73,7 +90,10 @@ def create_workspace(name, applications=None, folders=None, websites=None):
         return {"ok": False, "message": "A workspace name is required."}
     applications = _name_list(applications)
     folders = _name_list(folders)
-    websites = _name_list(websites)
+    try:
+        websites = _website_list(websites)
+    except ValueError as error:
+        return {"ok": False, "message": str(error)}
 
     with database_connection() as connection:
         if connection.execute(
@@ -224,6 +244,7 @@ def update_workspace(name, applications=None, folders=None, websites=None):
         # Validate every replacement before changing anything, so updates are atomic.
         application_ids = None
         folder_ids = None
+        website_urls = None
         if applications is not None:
             application_ids, missing = _approved_ids(
                 connection, "approved_applications", _name_list(applications)
@@ -236,6 +257,11 @@ def update_workspace(name, applications=None, folders=None, websites=None):
             )
             if missing:
                 return {"ok": False, "message": f"Folder {missing} is not approved."}
+        if websites is not None:
+            try:
+                website_urls = _website_list(websites)
+            except ValueError as error:
+                return {"ok": False, "message": str(error)}
 
         if application_ids is not None:
             connection.execute(
@@ -259,7 +285,7 @@ def update_workspace(name, applications=None, folders=None, websites=None):
             )
             connection.executemany(
                 "INSERT INTO workspace_websites (workspace_id, url) VALUES (?, ?)",
-                [(workspace_id, url) for url in _name_list(websites)],
+                [(workspace_id, url) for url in website_urls],
             )
         row = connection.execute(
             "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
