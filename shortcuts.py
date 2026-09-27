@@ -10,6 +10,7 @@ Needs pywin32 (pip install pywin32). If it isn't installed, resolving a
 """
 
 import os
+from pathlib import Path
 
 try:
     import win32com.client
@@ -41,3 +42,31 @@ def display_name_for(path: str) -> str:
     if name.casefold() == "msedge":
         return "Microsoft Edge"
     return name or base
+
+
+def list_installed_applications() -> list[dict[str, str]]:
+    """Find launchable app shortcuts from the current and shared Start Menus."""
+    roots = []
+    app_data = os.environ.get("APPDATA")
+    program_data = os.environ.get("PROGRAMDATA")
+    if app_data:
+        roots.append(Path(app_data) / "Microsoft" / "Windows" / "Start Menu" / "Programs")
+    if program_data:
+        roots.append(Path(program_data) / "Microsoft" / "Windows" / "Start Menu" / "Programs")
+
+    apps_by_name = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            for shortcut in root.rglob("*.lnk"):
+                name = display_name_for(str(shortcut))
+                if not name or "uninstall" in name.casefold():
+                    continue
+                apps_by_name.setdefault(
+                    name.casefold(), {"name": name, "path": str(shortcut)}
+                )
+        except OSError:
+            continue
+
+    return sorted(apps_by_name.values(), key=lambda app: app["name"].casefold())

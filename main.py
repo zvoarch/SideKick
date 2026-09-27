@@ -32,7 +32,9 @@ import math
 
 import settings_store
 from gemini import ToolCallingGeminiClient as GeminiClient
-from shortcuts import resolve_shortcut, display_name_for, PYWIN32_AVAILABLE
+from shortcuts import (
+    resolve_shortcut, display_name_for, list_installed_applications, PYWIN32_AVAILABLE,
+)
 from tools.applications import (
     add_approved_application, list_approved_applications,
     set_approved_application_enabled,
@@ -469,18 +471,20 @@ class SettingsDialog(QDialog):
 
         add_btn = QPushButton("Add Application…")
         add_btn.clicked.connect(self._add_application)
+        installed_btn = QPushButton("Find Start Menu Apps…")
+        installed_btn.clicked.connect(self._add_installed_application)
         remove_btn = QPushButton("Remove Selected")
         remove_btn.clicked.connect(lambda: self._remove_selected(self.apps_list))
 
         hint = QLabel(
-            "Pick a desktop shortcut or an .exe directly — shortcuts are "
-            "resolved to their real target automatically."
+            "Browse for an app or choose a shortcut from the Windows Start Menu."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #8A8B95; font-size: 11px;")
 
         btn_row = QHBoxLayout()
         btn_row.addWidget(add_btn)
+        btn_row.addWidget(installed_btn)
         btn_row.addWidget(remove_btn)
 
         tab = QWidget()
@@ -501,6 +505,65 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Can't read shortcut", str(exc))
             return
         self._add_app_item(display_name_for(resolved), resolved)
+
+    def _add_installed_application(self):
+        applications = list_installed_applications()
+        if not applications:
+            QMessageBox.information(
+                self,
+                "No app shortcuts found",
+                "Windows didn't return any app shortcuts from the Start Menu.",
+            )
+            return
+
+        picker = QDialog(self)
+        picker.setWindowTitle("Find Start Menu Applications")
+        picker.setFixedSize(340, 390)
+        search = QLineEdit()
+        search.setPlaceholderText("Search installed apps…")
+        app_list = QListWidget()
+        for application in applications:
+            item = QListWidgetItem(application["name"])
+            item.setData(Qt.UserRole, application["path"])
+            app_list.addItem(item)
+
+        def filter_apps(query):
+            query = query.casefold().strip()
+            for index in range(app_list.count()):
+                item = app_list.item(index)
+                item.setHidden(query not in item.text().casefold())
+
+        search.textChanged.connect(filter_apps)
+        add_selected = QPushButton("Add Selected")
+        add_selected.setEnabled(False)
+        app_list.itemSelectionChanged.connect(
+            lambda: add_selected.setEnabled(app_list.currentItem() is not None)
+        )
+        app_list.itemDoubleClicked.connect(lambda _item: picker.accept())
+        add_selected.clicked.connect(picker.accept)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(picker.reject)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch()
+        button_row.addWidget(cancel)
+        button_row.addWidget(add_selected)
+        layout = QVBoxLayout(picker)
+        layout.addWidget(search)
+        layout.addWidget(app_list, 1)
+        layout.addLayout(button_row)
+
+        if picker.exec() != QDialog.Accepted or app_list.currentItem() is None:
+            return
+        selected = app_list.currentItem()
+        path = selected.data(Qt.UserRole)
+        if any(
+            os.path.normcase(self.apps_list.item(i).data(Qt.UserRole)) == os.path.normcase(path)
+            for i in range(self.apps_list.count())
+        ):
+            QMessageBox.information(self, "Already added", f"{selected.text()} is already approved.")
+            return
+        self._add_app_item(selected.text(), path)
 
     def _add_app_item(self, name: str, path: str):
         item = QListWidgetItem(name)

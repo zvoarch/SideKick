@@ -31,6 +31,7 @@ from tools.google_calendar import (
     get_calendar_events,
     is_calendar_connected,
 )
+from shortcuts import list_installed_applications
 
 MODEL = "gemini-3.5-flash-lite"
 
@@ -63,6 +64,20 @@ def get_approved_applications_for_chat() -> dict:
     """List enabled approved application names without exposing their paths."""
     names = [app["name"] for app in list_approved_apps_locally()]
     return {"applications": names, "count": len(names)}
+
+
+def find_installed_applications_for_chat(query: str = "") -> dict:
+    """Suggest Start Menu apps the user can add to the approved list.
+
+    Args:
+        query: Optional app name to narrow the suggestions.
+    """
+    apps = list_installed_applications()
+    words = [word.casefold() for word in query.split() if word.strip()]
+    if words:
+        apps = [app for app in apps if all(word in app["name"].casefold() for word in words)]
+    names = [app["name"] for app in apps[:20]]
+    return {"applications": names, "count": len(apps), "showing": len(names)}
 
 
 def get_local_date_for_chat(days_from_today: int = 0) -> dict:
@@ -337,6 +352,12 @@ the names it returns. Never say you cannot list approved apps. If the list is
 empty, say no applications are approved yet. Tell the user they can view and add
 approved applications through Settings. This is not a list of every installed
 program; do not claim to know all installed applications.
+If the user wants to find installed apps or asks what they could add, call
+find_installed_applications_for_chat, show useful matching names, and direct them
+to Settings → Approved Applications → Find Start Menu Apps to add one manually.
+This list contains apps with Windows Start Menu shortcuts, so it may not include
+every installed program. Finding an app does not approve or open it. Never expose
+shortcut paths.
 
 FILES: For a file or folder request, search with find_file_or_folder first and
 show the numbered results. Open an item only after the user chooses its number,
@@ -405,6 +426,7 @@ CHAT_TOOLS = [
             open_application_for_chat,
             open_website_for_chat,
             get_approved_applications_for_chat,
+            find_installed_applications_for_chat,
             get_local_date_for_chat,
             find_file_or_folder,
             open_found_item_for_chat,
@@ -470,6 +492,9 @@ class ToolCallingGeminiClient:
                 config=types.GenerateContentConfig(
                     tools=[types.Tool(google_search=types.GoogleSearch())],
                     max_output_tokens=512,
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                        disable=True,
+                    ),
                 ),
             )
         except Exception:
