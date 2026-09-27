@@ -171,24 +171,16 @@ def open_workspace(name):
         active = connection.execute(
             "SELECT * FROM workspaces WHERE is_active = 1"
         ).fetchone()
+        already_active = active is not None and active["id"] == row["id"]
         if active is not None:
-            if active["id"] == row["id"]:
+            if not already_active:
                 return {
-                    "ok": True,
-                    "already_active": True,
-                    "name": row["name"],
-                    "opened_applications": [],
-                    "opened_folders": [],
-                    "opened_websites": 0,
-                    "issues": [],
-                    "message": f"Workspace {row['name']} is already active.",
+                    "ok": False,
+                    "message": f"Workspace {active['name']} is already active.",
                 }
-            return {
-                "ok": False,
-                "message": f"Workspace {active['name']} is already active.",
-            }
 
-        connection.execute("UPDATE workspaces SET is_active = 1 WHERE id = ?", (row["id"],))
+        if not already_active:
+            connection.execute("UPDATE workspaces SET is_active = 1 WHERE id = ?", (row["id"],))
         workspace = _workspace_data(connection, row)
 
     opened_applications = []
@@ -221,13 +213,16 @@ def open_workspace(name):
 
     return {
         "ok": True,
-        "already_active": False,
+        "already_active": already_active,
         "name": workspace["name"],
         "opened_applications": opened_applications,
         "opened_folders": opened_folders,
         "opened_websites": opened_websites,
         "issues": issues,
-        "message": f"Activated workspace {workspace['name']}.",
+        "message": (
+            f"Reopened workspace {workspace['name']}."
+            if already_active else f"Activated workspace {workspace['name']}."
+        ),
     }
 
 

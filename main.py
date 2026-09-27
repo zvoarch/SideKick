@@ -19,12 +19,13 @@ from PySide6.QtCore import (
     QEasingCurve, QThread, Signal,
 )
 from PySide6.QtGui import (
-    QGuiApplication, QFont, QIcon, QPainter, QColor, QBrush, QLinearGradient, QRadialGradient, QPen,
+    QGuiApplication, QFont, QTextCursor, QIcon, QPainter, QColor, QBrush, QLinearGradient, QRadialGradient, QPen,
     QGuiApplication, QFont, QPainter, QColor, QLinearGradient, QPolygonF, QPen,
     QPainterPath, QPixmap,
 )
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QLineEdit, QTextEdit, QVBoxLayout, QHBoxLayout, QDialog, QFormLayout,
+    QAbstractItemView,
     QTabWidget, QListWidget, QListWidgetItem,
     QFileDialog, QMenu, QMessageBox, QColorDialog,
 )
@@ -113,19 +114,17 @@ QTextEdit#chatLog {
     border-radius: 14px;
     color: #E8E8ED;
     padding: 12px;
-    font-size: 13px;
+    font-size: 14px;
+    font-family: "Segoe UI", "Calibri", sans-serif;
 }
 QLineEdit#chatInput {
-    background-color: #131317;
-    border: 1px solid #232329;
-    border-radius: 16px;
+    background-color: transparent;
+    border: none;
     color: white;
-    padding: 9px 14px;
+    padding: 8px 4px;
     font-size: 13px;
+    font-family: "Segoe UI", "Calibri", sans-serif;
     selection-background-color: #FF3D8A;
-}
-QLineEdit#chatInput:focus {
-    border: 1px solid #FF3D8A;
 }
 QPushButton#sendButton {
     background-color: #FF2E88;
@@ -482,15 +481,24 @@ class SettingsDialog(QDialog):
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #8A8B95; font-size: 11px;")
 
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(add_btn)
-        btn_row.addWidget(installed_btn)
-        btn_row.addWidget(remove_btn)
+        add_row = QHBoxLayout()
+        add_row.addWidget(add_btn, 1)
+        add_row.addWidget(installed_btn, 1)
+
+        remove_row = QHBoxLayout()
+        remove_row.addStretch(1)
+        remove_row.addWidget(remove_btn, 1)
+        remove_row.addStretch(1)
+
+        button_layout = QVBoxLayout()
+        button_layout.setSpacing(8)
+        button_layout.addLayout(add_row)
+        button_layout.addLayout(remove_row)
 
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.addWidget(self.apps_list, 1)
-        layout.addLayout(btn_row)
+        layout.addLayout(button_layout)
         layout.addWidget(hint)
         return tab
 
@@ -521,7 +529,13 @@ class SettingsDialog(QDialog):
         picker.setFixedSize(340, 390)
         search = QLineEdit()
         search.setPlaceholderText("Search installed apps…")
+        selection_hint = QLabel("Click each app to select it. Click again to deselect.")
+        selection_hint.setStyleSheet("color: #8A8B95; font-size: 11px;")
         app_list = QListWidget()
+        # MultiSelection toggles each row on a normal click, so multiple apps
+        # can be selected without holding Ctrl or Shift.
+        app_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        app_list.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         for application in applications:
             item = QListWidgetItem(application["name"])
             item.setData(Qt.UserRole, application["path"])
@@ -536,10 +550,15 @@ class SettingsDialog(QDialog):
         search.textChanged.connect(filter_apps)
         add_selected = QPushButton("Add Selected")
         add_selected.setEnabled(False)
-        app_list.itemSelectionChanged.connect(
-            lambda: add_selected.setEnabled(app_list.currentItem() is not None)
-        )
-        app_list.itemDoubleClicked.connect(lambda _item: picker.accept())
+
+        def update_add_button():
+            selected_count = len(app_list.selectedItems())
+            add_selected.setEnabled(selected_count > 0)
+            add_selected.setText(
+                f"Add Selected ({selected_count})" if selected_count else "Add Selected"
+            )
+
+        app_list.itemSelectionChanged.connect(update_add_button)
         add_selected.clicked.connect(picker.accept)
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(picker.reject)
@@ -550,20 +569,29 @@ class SettingsDialog(QDialog):
         button_row.addWidget(add_selected)
         layout = QVBoxLayout(picker)
         layout.addWidget(search)
+        layout.addWidget(selection_hint)
         layout.addWidget(app_list, 1)
         layout.addLayout(button_row)
 
-        if picker.exec() != QDialog.Accepted or app_list.currentItem() is None:
+        if picker.exec() != QDialog.Accepted or not app_list.selectedItems():
             return
-        selected = app_list.currentItem()
-        path = selected.data(Qt.UserRole)
-        if any(
-            os.path.normcase(self.apps_list.item(i).data(Qt.UserRole)) == os.path.normcase(path)
+        existing_paths = {
+            os.path.normcase(self.apps_list.item(i).data(Qt.UserRole))
             for i in range(self.apps_list.count())
-        ):
-            QMessageBox.information(self, "Already added", f"{selected.text()} is already approved.")
-            return
-        self._add_app_item(selected.text(), path)
+        }
+        added = 0
+        for selected in app_list.selectedItems():
+            path = selected.data(Qt.UserRole)
+            normalized_path = os.path.normcase(path)
+            if normalized_path in existing_paths:
+                continue
+            self._add_app_item(selected.text(), path)
+            existing_paths.add(normalized_path)
+            added += 1
+        if added == 0:
+            QMessageBox.information(
+                self, "Already added", "All selected apps are already approved."
+            )
 
     def _add_app_item(self, name: str, path: str):
         item = QListWidgetItem(name)
@@ -722,9 +750,25 @@ class Bubble(QWidget):
         painter.drawEllipse(rect)
 
         symbol_color = accent.lighter(140) if self.appearance["dark"] else accent.darker(125)
-        painter.setPen(symbol_color)
-        painter.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "SK")
+        # A small orbit-and-companion mark, drawn directly so it stays crisp
+        # at the bubble's compact size and adapts to the chosen accent color.
+        painter.save()
+        painter.translate(rect.center())
+        painter.rotate(-32)
+        orbit_color = QColor(symbol_color)
+        orbit_color.setAlpha(190)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(orbit_color, 1.5))
+        painter.drawEllipse(QRectF(-15, -8, 30, 16))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(symbol_color)
+        painter.drawEllipse(QPointF(-13, 0), 2.4, 2.4)
+        painter.drawEllipse(QPointF(13, 0), 2.0, 2.0)
+        painter.setBrush(QColor(symbol_color.red(), symbol_color.green(), symbol_color.blue(), 75))
+        painter.drawEllipse(QPointF(0, 0), 7.0, 7.0)
+        painter.setBrush(symbol_color)
+        painter.drawEllipse(QPointF(0, 0), 4.2, 4.2)
+        painter.restore()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -795,6 +839,99 @@ class MinimizeButton(QPushButton):
         painter.drawLine(QPointF(w * 0.28, h * 0.5), QPointF(w * 0.72, h * 0.5))
 
 
+class StatusDot(QWidget):
+    """A small pulsing dot used as a companion 'online' indicator."""
+
+    def __init__(self, color: QColor, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(9, 9)
+        self._color = QColor(color)
+        self._opacity = 1.0
+
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(900)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+        self._anim.setStartValue(0.35)
+        self._anim.setEndValue(1.0)
+        self._anim.valueChanged.connect(self._on_value_changed)
+        self._anim.finished.connect(self._reverse)
+        self._anim.start()
+
+    def _on_value_changed(self, value):
+        self._opacity = value
+        self.update()
+
+    def _reverse(self):
+        start = self._anim.startValue()
+        end = self._anim.endValue()
+        self._anim.setStartValue(end)
+        self._anim.setEndValue(start)
+        self._anim.start()
+
+    def set_color(self, color: QColor):
+        self._color = QColor(color)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        color = QColor(self._color)
+        color.setAlphaF(self._opacity)
+        painter.setBrush(color)
+        painter.drawEllipse(self.rect().adjusted(1, 1, -1, -1))
+
+
+class TypingIndicator(QWidget):
+    """A small animated wave of three dots for the current reply."""
+
+    DOT_COUNT = 3
+    DOT_RADIUS = 4.0
+    SPACING = 11
+    AMPLITUDE = 4.0
+
+    def __init__(self, color: QColor, parent=None):
+        super().__init__(parent)
+        self._color = QColor(color)
+        self.setFixedSize(36, 18)
+        self._phase = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(30)
+        self._timer.timeout.connect(self._advance)
+        self.hide()
+
+    def start(self):
+        self._phase = 0.0
+        self.show()
+        self._timer.start()
+
+    def stop(self):
+        self._timer.stop()
+        self.hide()
+
+    def set_color(self, color: QColor):
+        self._color = QColor(color)
+        self.update()
+
+    def _advance(self):
+        self._phase = (self._phase + 0.22) % (2 * math.pi)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        for index in range(self.DOT_COUNT):
+            wave = math.sin(self._phase - index * (math.pi / 2.2))
+            color = QColor(self._color)
+            color.setAlphaF(0.55 + 0.45 * ((wave + 1) / 2))
+            painter.setBrush(color)
+            radius = self.DOT_RADIUS * (0.75 + 0.25 * ((wave + 1) / 2))
+            x = self.DOT_RADIUS + 2 + index * self.SPACING
+            y = self.height() / 2 - wave * self.AMPLITUDE
+            painter.drawEllipse(QPointF(x, y), radius, radius)
+
+
 class ChatWindow(QWidget):
     minimize_requested = Signal()
     settings_changed = Signal(dict)
@@ -848,6 +985,12 @@ class ChatWindow(QWidget):
         if app:
             app.setStyleSheet(build_stylesheet(new_settings))
         self.divider.setStyleSheet(f"background-color: {self.appearance['border']};")
+        self.greeting_label.setStyleSheet(
+            f"color: {self.appearance['muted']}; font-size: 12px; "
+            "font-family: 'Segoe UI Semibold', 'Segoe UI', sans-serif;"
+        )
+        self.status_dot.set_color(QColor(self.appearance["accent"]))
+        self.typing_indicator.set_color(QColor(self.appearance["accent"]))
         self.update()
         self._init_client()
         self.settings_changed.emit(new_settings)
@@ -873,9 +1016,33 @@ class ChatWindow(QWidget):
         self.divider.setFixedHeight(1)
         self.divider.setStyleSheet(f"background-color: {self.appearance['border']};")
 
+        # Greeting row shown at the top of the chat area so it never opens
+        # to a blank/empty-feeling log — a pulsing dot + friendly hello.
+        self.status_dot = StatusDot(QColor(self.appearance["accent"]))
+        self.greeting_label = QLabel("Hey, Sidekick here to help!")
+        self.greeting_label.setStyleSheet(
+            f"color: {self.appearance['muted']}; font-size: 12px; "
+            "font-family: 'Segoe UI Semibold', 'Segoe UI', sans-serif;"
+        )
+        greeting_row = QHBoxLayout()
+        greeting_row.setContentsMargins(2, 0, 0, 4)
+        greeting_row.setSpacing(8)
+        greeting_row.addWidget(self.status_dot)
+        greeting_row.addWidget(self.greeting_label)
+        greeting_row.addStretch()
+
         self.chat_log = QTextEdit()
         self.chat_log.setObjectName("chatLog")
         self.chat_log.setReadOnly(True)
+        self.typing_indicator = TypingIndicator(
+            QColor(self.appearance["accent"]), self.chat_log.viewport()
+        )
+        self.chat_log.verticalScrollBar().valueChanged.connect(
+            self._position_thinking_indicator
+        )
+
+        self._thinking_active = False
+        self._thinking_anchor = None
 
         self.input_box = QLineEdit()
         self.input_box.setObjectName("chatInput")
@@ -887,13 +1054,14 @@ class ChatWindow(QWidget):
         self.send_btn.clicked.connect(self.send_message)
 
         input_row = QHBoxLayout()
-        input_row.addWidget(self.input_box)
+        input_row.addWidget(self.input_box, 1)
         input_row.addWidget(self.send_btn)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 14)
         layout.addLayout(title_bar)
         layout.addWidget(self.divider)
+        layout.addLayout(greeting_row)
         layout.addWidget(self.chat_log, 1)
         layout.addLayout(input_row)
 
@@ -915,6 +1083,10 @@ class ChatWindow(QWidget):
 
     # ---- chat logic -----------------------------------------------------
     def _append(self, sender: str, text: str):
+        self.chat_log.append(self._message_html(sender, text))
+        self.chat_log.verticalScrollBar().setValue(self.chat_log.verticalScrollBar().maximum())
+
+    def _message_html(self, sender: str, text: str) -> str:
         color = {
             "you": self.appearance["accent"],
             "companion": self.appearance["title"],
@@ -922,8 +1094,45 @@ class ChatWindow(QWidget):
         }[sender]
         label = {"you": "You", "companion": "Companion", "system": ""}[sender]
         prefix = f"<b style='color:{color}'>{label}:</b> " if label else ""
-        self.chat_log.append(f"<div style='margin:4px 0'>{prefix}{text}</div>")
+        return (
+            "<div style=\"margin:6px 0; font-family:'Segoe UI','Calibri',sans-serif; "
+            f"font-size:13.5px; line-height:1.45;\">{prefix}{text}</div>"
+        )
+
+    def _start_thinking_message(self):
+        self._thinking_active = True
+        # Keep the indicator as a separate widget over a reserved blank row.
+        # It never modifies any existing message text.
+        self.chat_log.append("<div style='margin:0;font-size:13px'>&nbsp;</div>")
+        cursor = QTextCursor(self.chat_log.document())
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+        self._thinking_anchor = cursor
         self.chat_log.verticalScrollBar().setValue(self.chat_log.verticalScrollBar().maximum())
+        self.typing_indicator.start()
+        QTimer.singleShot(0, self._position_thinking_indicator)
+
+    def _position_thinking_indicator(self, *_args):
+        if not self._thinking_active or self._thinking_anchor is None:
+            return
+        rect = self.chat_log.cursorRect(self._thinking_anchor)
+        viewport = self.chat_log.viewport()
+        x = max(4, rect.left())
+        y = min(max(0, rect.top()), max(0, viewport.height() - self.typing_indicator.height()))
+        self.typing_indicator.move(x, y)
+
+    def _stop_thinking_message(self):
+        self.typing_indicator.stop()
+        self._thinking_active = False
+        if self._thinking_anchor is not None:
+            block = self._thinking_anchor.block()
+            if block.isValid() and not block.text().replace("\u00a0", "").strip():
+                cursor = QTextCursor(block)
+                cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+                cursor.removeSelectedText()
+                if cursor.block().previous().isValid():
+                    cursor.deletePreviousChar()
+        self._thinking_anchor = None
 
     def send_message(self):
         text = self.input_box.text().strip()
@@ -940,7 +1149,7 @@ class ChatWindow(QWidget):
                 self._append("system", "No API key set yet — click Settings to add one.")
             return
         self.send_btn.setEnabled(False)
-        self._append("system", "Companion is on it…")
+        self._start_thinking_message()
 
         self.worker = GeminiWorker(self.client, text)
         self.worker.reply_ready.connect(self._on_reply)
@@ -955,11 +1164,11 @@ class ChatWindow(QWidget):
         cursor.removeSelectedText()
 
     def _on_reply(self, text: str):
-        self._remove_last_line()
+        self._stop_thinking_message()
         self._append("companion", text)
 
     def _on_error(self, message: str):
-        self._remove_last_line()
+        self._stop_thinking_message()
         details = message.casefold()
         if "getaddrinfo failed" in details or "name resolution" in details or "11001" in details:
             friendly = "I couldn't reach an online service. Check your internet connection and try again."
