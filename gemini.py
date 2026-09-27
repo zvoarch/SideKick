@@ -13,6 +13,7 @@ from tools.applications import (
     list_approved_applications as list_approved_apps_locally,
     open_approved_application as open_approved_application_locally,
 )
+from tools.activity import get_recent_activity, record_activity
 from tools.context import get_current_context
 from tools.files import list_approved_folders, open_from_path, search_files
 from tools.tasks import complete_task, create_task, get_tasks
@@ -33,6 +34,14 @@ MODEL = "gemini-3.5-flash-lite"
 _search_result_paths: list[str] = []
 
 
+def _record_chat_activity(activity_type: str, name: str) -> None:
+    """Keep local logging failures from changing the result of an open action."""
+    try:
+        record_activity(activity_type, name)
+    except Exception:
+        pass
+
+
 def open_application_for_chat(name: str) -> dict:
     """Open an approved application by its saved name or executable name.
 
@@ -40,7 +49,10 @@ def open_application_for_chat(name: str) -> dict:
     "Microsoft Edge" as the same app, but only if Edge is approved in settings.
     The path is looked up and used locally and is never exposed to Gemini.
     """
-    return open_approved_application_locally(name)
+    result = open_approved_application_locally(name)
+    if result.get("ok"):
+        _record_chat_activity("application_opened", result.get("application", name))
+    return result
 
 
 def open_website_for_chat(url: str) -> dict:
@@ -72,6 +84,7 @@ def open_all_approved_applications_for_chat() -> dict:
         result = open_approved_application_locally(application["name"])
         if result.get("ok"):
             opened.append(application["name"])
+            _record_chat_activity("application_opened", application["name"])
         else:
             failed.append(application["name"])
     return {
@@ -269,6 +282,7 @@ def open_workspace_for_chat(name: str) -> dict:
             "message": "There are no saved workspaces yet.",
             "available_workspaces": [],
         }
+    _record_chat_activity("workspace_opened", result.get("name", name))
     return {
         "ok": result["ok"],
         "name": result.get("name"),
@@ -293,7 +307,28 @@ def get_current_context_for_chat() -> dict:
     active = context["active_workspace"]
     return {
         "active_workspace": active["name"] if active else None,
-        "tasks": get_tasks_for_chat(),
+        "tasks": [task for task in context["tasks"] if not task["completed"]],
+    }
+
+
+def get_recent_activity_for_chat() -> dict:
+    """Return at most five recent app/workspace opens, without paths or content."""
+    activities = []
+    for activity in get_recent_activity(limit=5):
+        timestamp = datetime.fromisoformat(activity["timestamp"]).astimezone()
+        label = (
+            "Opened application"
+            if activity["type"] == "application_opened"
+            else "Opened workspace"
+        )
+        activities.append({
+            "action": label,
+            "name": activity["details"],
+            "time": timestamp.strftime("%b %d, %Y at %I:%M %p"),
+        })
+    return {
+        "activities": activities,
+        "message": "" if activities else "No app or workspace opens have been recorded yet.",
     }
 
 
@@ -353,6 +388,13 @@ one. Do not search files or suggest file search to recover from a missing
 workspace. Do not create a workspace until the user agrees. The deactivate tool
 clears the active workspace context but does not close apps.
 
+ACTIVITY HISTORY: If the user asks what they were last working on or asks about
+recent app/workspace activity, call get_recent_activity_for_chat. It contains
+only successful app opens and workspace opens, with names and times. It never
+contains file searches, file names, paths, websites, prompts, or message text.
+Use the latest entry for “what was I last working on?” Keep the answer brief and
+do not infer other activity.
+
 WEBSITES: For a request to find a current website, link, article, or set of
 search results, use search_web_for_chat and base links on its returned sources.
 Do not invent URLs. If the user asks to open a website, use
@@ -400,6 +442,7 @@ CHAT_TOOLS = [
             get_approved_applications_for_chat,
             find_installed_applications_for_chat,
             get_local_date_for_chat,
+            get_recent_activity_for_chat,
             find_file_or_folder,
             open_found_item_for_chat,
             create_task_for_chat,

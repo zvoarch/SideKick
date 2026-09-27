@@ -11,17 +11,17 @@ API key (from https://aistudio.google.com/apikey), hit Save.
 
 import sys
 import ctypes
+from html import escape
 import os
 import traceback
 
 from PySide6.QtCore import (
-    Qt, QRect, QRectF, QSize, QPoint, QPointF, QPropertyAnimation, QVariantAnimation, QTimer,
+    Qt, QRect, QRectF, QSize, QPoint, QPointF, QVariantAnimation, QTimer,
     QEasingCurve, QThread, Signal,
 )
 from PySide6.QtGui import (
     QGuiApplication, QFont, QTextCursor, QIcon, QPainter, QColor, QBrush, QLinearGradient, QRadialGradient, QPen,
-    QGuiApplication, QFont, QPainter, QColor, QLinearGradient, QPolygonF, QPen,
-    QPainterPath, QPixmap,
+    QPolygonF, QPainterPath, QPixmap,
 )
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QLineEdit, QTextEdit, QVBoxLayout, QHBoxLayout, QDialog, QFormLayout,
@@ -34,7 +34,7 @@ import math
 import settings_store
 from gemini import ToolCallingGeminiClient as GeminiClient
 from shortcuts import (
-    resolve_shortcut, display_name_for, list_installed_applications, PYWIN32_AVAILABLE,
+    resolve_shortcut, display_name_for, list_installed_applications,
 )
 from tools.applications import (
     add_approved_application, list_approved_applications,
@@ -664,10 +664,7 @@ class SettingsDialog(QDialog):
 
 
 class Bubble(QWidget):
-    """The small floating SD orb shown when the chat is minimized."""
-    """The small floating sparkle orb shown when the chat is minimized."""
-    """The small floating sparkle orb shown when the chat is minimized."""
-    """The small plain orb shown when the chat is minimized."""
+    """The small companion orb shown when the chat is minimized."""
     clicked = Signal()
 
     def __init__(self, settings: dict | None = None):
@@ -907,6 +904,7 @@ class ChatWindow(QWidget):
         self.appearance = appearance_palette(settings)
         self.client = None
         self.worker = None
+        self._request_in_flight = False
         self._init_client()
 
         self._drag_offset = QPoint()
@@ -1054,9 +1052,11 @@ class ChatWindow(QWidget):
         }[sender]
         label = {"you": "You", "companion": "Companion", "system": ""}[sender]
         prefix = f"<b style='color:{color}'>{label}:</b> " if label else ""
+        safe_text = escape(text, quote=True).replace("\r\n", "\n").replace("\r", "\n")
+        safe_text = safe_text.replace("\n", "<br>")
         return (
             "<div style=\"margin:6px 0; font-family:'Segoe UI','Calibri',sans-serif; "
-            f"font-size:13.5px; line-height:1.45;\">{prefix}{text}</div>"
+            f"font-size:13.5px; line-height:1.45;\">{prefix}{safe_text}</div>"
         )
 
     def _start_thinking_message(self):
@@ -1095,6 +1095,8 @@ class ChatWindow(QWidget):
         self._thinking_anchor = None
 
     def send_message(self):
+        if self._request_in_flight:
+            return
         text = self.input_box.text().strip()
         if not text:
             return
@@ -1108,20 +1110,21 @@ class ChatWindow(QWidget):
             else:
                 self._append("system", "No API key set yet — click Settings to add one.")
             return
+        self._request_in_flight = True
         self.send_btn.setEnabled(False)
+        self.input_box.setEnabled(False)
         self._start_thinking_message()
 
         self.worker = GeminiWorker(self.client, text)
         self.worker.reply_ready.connect(self._on_reply)
         self.worker.error.connect(self._on_error)
-        self.worker.finished.connect(lambda: self.send_btn.setEnabled(True))
+        self.worker.finished.connect(self._on_worker_finished)
         self.worker.start()
 
-    def _remove_last_line(self):
-        cursor = self.chat_log.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        cursor.select(cursor.SelectionType.BlockUnderCursor)
-        cursor.removeSelectedText()
+    def _on_worker_finished(self):
+        self._request_in_flight = False
+        self.send_btn.setEnabled(True)
+        self.input_box.setEnabled(True)
 
     def _on_reply(self, text: str):
         self._stop_thinking_message()

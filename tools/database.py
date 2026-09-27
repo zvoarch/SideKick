@@ -2,13 +2,15 @@ from contextlib import contextmanager
 import os
 from pathlib import Path
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 APP_DATA_ROOT = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
 APP_DATA_DIR = APP_DATA_ROOT / "Desktop-Companion-App"
 # Normal app data stays under Windows local app data; tests can override this with COMPANION_DB_PATH.
 DEFAULT_DATABASE_PATH = APP_DATA_DIR / "companion.sqlite3"
 DATABASE_PATH = Path(os.environ.get("COMPANION_DB_PATH", DEFAULT_DATABASE_PATH))
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+ACTIVITY_RETENTION_DAYS = 365
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS approved_applications (
@@ -62,6 +64,18 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    activity_type TEXT NOT NULL CHECK (
+        activity_type IN ('application_opened', 'workspace_opened')
+    ),
+    subject TEXT NOT NULL CHECK (length(subject) BETWEEN 1 AND 200),
+    occurred_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS activity_log_occurred_at
+ON activity_log (occurred_at DESC);
 """
 
 
@@ -92,6 +106,10 @@ def initialize_database():
         connection.executescript(SCHEMA)
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         connection.execute("UPDATE workspaces SET is_active = 0")
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=ACTIVITY_RETENTION_DAYS)
+        ).isoformat(timespec="seconds")
+        connection.execute("DELETE FROM activity_log WHERE occurred_at < ?", (cutoff,))
 
 
 
